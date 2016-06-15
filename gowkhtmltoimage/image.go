@@ -8,16 +8,47 @@ package gowkhtmltoimage
 #cgo CFLAGS: -I/usr/local/include
 #cgo LDFLAGS: -L/usr/local/lib -lwkhtmltox
 
+static void progress_changed(wkhtmltoimage_converter *conv, int p) {
+    // fprintf(stderr, "%3d%%\n", p);
+}
+
+static void phase_changed(wkhtmltoimage_converter *conv) {
+    int phase = wkhtmltoimage_current_phase(conv);
+    // fprintf(stderr, "=== phase description: %s\n", wkhtmltoimage_phase_description(conv, phase));
+}
+
+static void warning_cb(wkhtmltoimage_converter *conv, const char *msg) {
+    // fprintf(stderr, ">>> warning: %s\n", msg);
+}
+
+static void error_cb(wkhtmltoimage_converter *conv, const char *msg) {
+    // fprintf(stderr, ">>> error: %s\n", msg);
+}
+
+static void set_callback(wkhtmltoimage_converter *conv) {
+    wkhtmltoimage_set_progress_changed_callback(conv, progress_changed);
+    wkhtmltoimage_set_phase_changed_callback(conv, phase_changed);
+    wkhtmltoimage_set_warning_callback(conv, warning_cb);
+    wkhtmltoimage_set_error_callback(conv, error_cb);
+}
+
 */
 import "C"
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"unsafe"
 )
 
+var inited bool = false
+
 func Init(use_graphics bool) {
+	if inited {
+		return
+	}
+
 	var ok C.int
 	if use_graphics {
 		ok = C.wkhtmltoimage_init(C.int(1))
@@ -27,10 +58,14 @@ func Init(use_graphics bool) {
 	if ok != C.int(1) {
 		panic("wkhtmltoimage init fail")
 	}
+	inited = true
 }
 
 func DeInit() {
-	C.wkhtmltoimage_deinit()
+	if inited {
+		C.wkhtmltoimage_deinit()
+		inited = false
+	}
 }
 
 type Convertor struct {
@@ -56,6 +91,7 @@ func NewConvertor() *Convertor {
 	// Memory leak would be cause if func Ready being not called
 	runtime.SetFinalizer(convertor, func(c *Convertor) {
 		if c.wkConvertor != nil {
+			fmt.Println("destroy wkConvertor")
 			C.wkhtmltoimage_destroy_converter(c.wkConvertor)
 		}
 	})
@@ -92,6 +128,7 @@ func (conv *Convertor) Ready() error {
 	if unsafe.Pointer(conv.wkConvertor) == unsafe.Pointer(nil) {
 		return errors.New("wkhtmltoimage_create_converter error")
 	}
+	C.set_callback(conv.wkConvertor)
 	return nil
 }
 
@@ -101,7 +138,6 @@ func (conv *Convertor) Run() error {
 	}
 	rc := C.wkhtmltoimage_convert(conv.wkConvertor)
 	if int(rc) != 1 {
-		// get error
 		return errors.New("some error happened")
 	}
 

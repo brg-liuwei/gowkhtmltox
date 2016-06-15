@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	_ "net/http/pprof"
+	"runtime"
+	"time"
 
 	img "github.com/brg-liuwei/gowkhtmltox/gowkhtmltoimage"
 )
 
 var port = flag.Int("port", 9999, "http listen port")
+var renderService *RenderService
 
 func urlRender(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
@@ -25,7 +29,7 @@ func urlRender(w http.ResponseWriter, r *http.Request) {
 	conv := img.NewConvertor()
 	conv.SetProperty("web.loadImages", "true")
 	conv.SetProperty("fmt", "jpg")
-	conv.SetProperty("in", "url")
+	conv.SetProperty("in", url)
 	if err := conv.Ready(); err != nil {
 		http.Error(w, "render ready error", http.StatusOK)
 		fmt.Println("url render ready error")
@@ -45,43 +49,72 @@ func htmlRender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "", http.StatusForbidden)
 		return
 	}
+
+	now := time.Now()
+
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body error: "+err.Error(), http.StatusOK)
 		fmt.Println("html render read body error")
 		return
 	}
-	conv := img.NewConvertor()
-	conv.SetProperty("web.loadImages", "true")
-	conv.SetProperty("fmt", "jpg")
-	conv.SetHtml(string(body))
-	if err := conv.Ready(); err != nil {
-		http.Error(w, "render ready error", http.StatusOK)
-		fmt.Println("html render ready error")
-		return
+
+	fmt.Println("read body: ", time.Since(now))
+
+	now = time.Now()
+
+	ch := renderService.AddHtml(string(body))
+
+	fmt.Println("ready: ", time.Since(now))
+
+	now = time.Now()
+
+	m := <-ch
+
+	if m["errmsg"] != "ok" {
+		http.Error(w, "render error: "+m["errmsg"], http.StatusOK)
 	}
-	if err := conv.Run(); err != nil {
-		http.Error(w, "render error", http.StatusOK)
-		fmt.Println("html render run error")
-		return
-	}
+
+	fmt.Println("run: ", time.Since(now))
+
+	now = time.Now()
+
 	w.Header().Set("Content-Type", "image/jpg")
-	w.Write(conv.GetImage())
+	w.Write([]byte(m["jpg"]))
+
+	fmt.Println("output: ", time.Since(now))
 }
 
 func init() {
 	flag.Parse()
+	img.Init(false)
 }
 
-func main() {
-	img.Init(false)
+func main_http() {
+	runtime.GOMAXPROCS(8)
+	go func() {
+		http.ListenAndServe("localhost:6060", nil)
+	}()
+	renderService = NewRenderService()
+	go renderService.Run()
 
 	http.HandleFunc("/render/url", urlRender)
 	http.HandleFunc("/render/html", htmlRender)
 
-	fmt.Println("port = ", *port)
-
 	panic(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
+}
 
-	img.DeInit()
+func main() {
+	renderService = NewRenderService()
+	go renderService.Run()
+
+	data := "<html><body><h1>Hello HtmlToImage</h1></body><html>"
+
+	for i := 0; i != 10; i++ {
+		now := time.Now()
+		ch := renderService.AddHtml(data)
+		for m := range ch {
+			fmt.Println(time.Since(now), " >>> ", m["errmsg"], len(m["jpg"]))
+		}
+	}
 }
